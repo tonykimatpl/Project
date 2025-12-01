@@ -52,7 +52,16 @@ class GameClient:
         self.big_font = pygame.font.SysFont("Arial", 36, bold=True)
         self.small_font = pygame.font.SysFont("Arial", 18)
         self.winner_font = pygame.font.SysFont("Arial", 48, bold=True)  # New large font for winner screen
-        self.claim_sound = pygame.mixer.Sound(pygame.mixer.Sound(buffer=b'\x00\x00' * 1000))  # Placeholder (fixed typo)
+
+        # Load sounds with error handling
+        try:
+            self.claim_sound = pygame.mixer.Sound('claim.mp3')
+            self.victory_sound = pygame.mixer.Sound('victory.mp3')
+        except pygame.error as e:
+            print(f"Error loading sounds: {e}. Ensure files are in the directory. Using placeholders.")
+            # Fallback to silent placeholders if loading fails
+            self.claim_sound = pygame.mixer.Sound(buffer=b'\x00\x00' * 1000)
+            self.victory_sound = pygame.mixer.Sound(buffer=b'\x00\x00' * 1000)
 
         # Start WebSocket in a thread
         threading.Thread(target=self.start_websocket, daemon=True).start()
@@ -106,6 +115,7 @@ class GameClient:
                         print(f"Game Over: Winner {self.winner}")
                         if self.winner == self.symbol:
                             self.create_victory_particles(self.winner)
+                            self.victory_sound.play()  # Play victory sound for the local winner
                     elif data['status'] == 'Game aborted: Player disconnected':
                         self.game_over = True
                         print("Game Aborted: Player disconnected.")
