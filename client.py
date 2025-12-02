@@ -10,7 +10,7 @@ import random
 BOARD_SIZE = 5  # Increased to 5x5
 CELL_SIZE = 80  # Adjusted for fit
 SIDEBAR_WIDTH = 200  # Space for stats on the side
-WINDOW_SIZE = (BOARD_SIZE * CELL_SIZE + SIDEBAR_WIDTH + 40, BOARD_SIZE * CELL_SIZE + 100)  # Extra space
+WINDOW_SIZE = (BOARD_SIZE * CELL_SIZE + SIDEBAR_WIDTH + 40, BOARD_SIZE * CELL_SIZE + 300)  # Extra space for rules
 HOLD_TIME_MS = 3000  # 3 seconds
 ANIMATION_FPS = 60  # For smooth animation
 
@@ -24,6 +24,8 @@ class GameClient:
         self.game_over = False
         self.winner = None  # Track the winner symbol
         self.board = [[' ' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+        self.connected_players = []  # Track connected players: [{'id': int, 'symbol': str}, ...]
+        self.game_started = False
         self.hold_start_time = None
         self.hold_row = None
         self.hold_col = None
@@ -112,7 +114,12 @@ class GameClient:
                     self.player_id = data['player_id']
                     self.symbol = data['symbol']
 
+                if 'connected_players' in data:
+                    self.connected_players = data['connected_players']
+
                 if 'status' in data:
+                    if data['status'] == 'Game started!':
+                        self.game_started = True
                     if 'board' in data:
                         self.board = data['board']
                         self.reset_hold()
@@ -144,9 +151,9 @@ class GameClient:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.MOUSEBUTTONDOWN and not self.game_over:
+                elif event.type == pygame.MOUSEBUTTONDOWN and not self.game_over and self.game_started:
                     self.handle_mouse_down(event)
-                elif event.type == pygame.MOUSEBUTTONUP and not self.game_over:
+                elif event.type == pygame.MOUSEBUTTONUP and not self.game_over and self.game_started:
                     self.handle_mouse_up(event)
                 elif event.type == pygame.VIDEORESIZE:
                     self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
@@ -216,10 +223,17 @@ class GameClient:
         label = self.font.render(label_text, True, self.text_color)
         self.screen.blit(label, (20, 10))
 
-        # Status (e.g., Game Over)
-        if self.game_over and (self.winner != self.symbol or self.winner is None):
-            status_text = "Game Over"
+        # Status (e.g., Waiting, Game Over, Aborted)
+        if self.game_over:
+            if self.winner is None:
+                status_text = "Game Aborted"
+            else:
+                status_text = "Game Over"
             status = self.font.render(status_text, True, (255, 0, 0))
+            self.screen.blit(status, (self.screen.get_width() // 2 - status.get_width() // 2 - SIDEBAR_WIDTH // 2, 10))
+        elif not self.game_started:
+            status_text = f"Waiting for players ({len(self.connected_players)} connected)"
+            status = self.font.render(status_text, True, (0, 0, 255))
             self.screen.blit(status, (self.screen.get_width() // 2 - status.get_width() // 2 - SIDEBAR_WIDTH // 2, 10))
 
         # Draw board
@@ -273,8 +287,14 @@ class GameClient:
                 # Grid lines
                 pygame.draw.rect(self.screen, self.grid_color, rect, width=2, border_radius=10)
 
-        # Draw player scores on the side (always, even in game over)
-        self.draw_scores(offset_x + BOARD_SIZE * CELL_SIZE + 20, 60)
+        # Draw sidebar elements
+        sidebar_x = offset_x + BOARD_SIZE * CELL_SIZE + 20
+        y_side = 60
+        y_side = self.draw_connected(sidebar_x, y_side)
+        self.draw_scores(sidebar_x, y_side)
+
+        # Draw rules section below the board
+        self.draw_rules(20, offset_y + BOARD_SIZE * CELL_SIZE + 20)
 
         # Draw winner screen if local player won
         if self.game_over and self.winner == self.symbol:
@@ -284,6 +304,32 @@ class GameClient:
         for particle in self.victory_particles:
             alpha_color = (*particle['color'][:3], int(particle['alpha']))  # Apply alpha
             pygame.draw.circle(self.screen, alpha_color, (int(particle['x']), int(particle['y'])), int(particle['size']))
+
+    # Draws the connected players section
+    def draw_connected(self, x, y):
+        title = self.font.render("Connected Players", True, self.text_color)
+        self.screen.blit(title, (x, y))
+        y += 40
+        for p in sorted(self.connected_players, key=lambda p: p['id']):
+            text = f"Player {p['id']} ({p['symbol']})"
+            label = self.small_font.render(text, True, self.colors.get(p['symbol'], self.text_color))
+            self.screen.blit(label, (x, y))
+            y += 30
+        return y + 20  # Spacing
+
+    # Draws the rules section
+    def draw_rules(self, x, y):
+        rules = [
+            "Rules of Deny and Conquer:",
+            "- Hold the mouse button on a neutral (white) square for 3 seconds to claim it with your symbol.",
+            "- The first player to complete a full row, column, or diagonal with their symbol wins immediately.",
+            "- If the board fills up without a line win, the player with the most claimed squares wins.",
+            "- The game supports 2 to 3 players. Additional players can join mid-game if there's space."
+        ]
+        for line in rules:
+            text = self.small_font.render(line, True, self.text_color)
+            self.screen.blit(text, (x, y))
+            y += 25
 
     # Draws the winner celebration screen
     def draw_winner_screen(self):
@@ -307,75 +353,58 @@ class GameClient:
         text_rect = scaled_text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 - 50))
         self.screen.blit(scaled_text, text_rect)
 
-        # Subtitle
-        subtitle = self.font.render("You Conquered!", True, text_color)
-        sub_rect = subtitle.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 + 50))
-        self.screen.blit(subtitle, sub_rect)
+    # Creates particle effects for victory
+    def create_victory_particles(self, winner_symbol):
+        num_particles = 100
+        for _ in range(num_particles):
+            particle = {
+                'x': random.randint(0, WINDOW_SIZE[0]),
+                'y': random.randint(0, WINDOW_SIZE[1]),
+                'vx': random.uniform(-2, 2),
+                'vy': random.uniform(-2, 2),
+                'size': random.randint(2, 5),
+                'alpha': random.randint(100, 255),
+                'color': self.colors.get(winner_symbol, (255, 255, 0)),
+                'lifetime': random.randint(60, 120)
+            }
+            self.victory_particles.append(particle)
 
-    # Draws the leaderboard sidebar with player scores
-    def draw_scores(self, x, y):
-        title = self.font.render("Leaderboard", True, self.text_color)
-        self.screen.blit(title, (x, y))
-        y += 40
+    # Updates particle positions and lifetimes
+    def update_particles(self):
+        for particle in self.victory_particles[:]:
+            particle['x'] += particle['vx']
+            particle['y'] += particle['vy']
+            particle['alpha'] -= 2  # Fade out
+            particle['lifetime'] -= 1
+            if particle['lifetime'] <= 0 or particle['alpha'] <= 0:
+                self.victory_particles.remove(particle)
 
-        sorted_scores = sorted(self.player_scores.items(), key=lambda item: item[1], reverse=True)
-
-        for i, (symbol, score) in enumerate(sorted_scores):
-            is_leader = i == 0
-            prefix = "★ " if is_leader else ""
-            score_text = f"{prefix}{symbol}: {score}"
-            font = self.small_font if not is_leader else self.font  # Bold for leader
-            score_label = font.render(score_text, True, self.colors.get(symbol, self.text_color))
-            self.screen.blit(score_label, (x, y))
-            y += 30
-
-    # Updates player scores based on the current board state
-    def update_scores(self):
-        self.player_scores = {'X': 0, 'O': 0, '△': 0}  # Reset
-        for row in self.board:
-            for cell in row:
-                if cell != ' ':
-                    self.player_scores[cell] += 1
-
-    # Resets the hold state variables
+    # Resets hold state
     def reset_hold(self):
         self.hold_start_time = None
         self.hold_row = None
         self.hold_col = None
         self.hold_progress = 0.0
 
-    # Creates victory particle effects for celebration
-    def create_victory_particles(self, winner):
-        self.victory_particles = []
-        winner_color = self.colors.get(winner, (255, 255, 0))  # Default yellow if error
-        center_x, center_y = self.screen.get_width() // 2, self.screen.get_height() // 2
-        for _ in range(200):  # More particles for cooler effect
-            angle = random.uniform(0, 2 * math.pi)
-            speed = random.uniform(5, 10)
-            self.victory_particles.append({
-                'x': center_x,
-                'y': center_y,
-                'vx': speed * math.cos(angle),
-                'vy': speed * math.sin(angle),
-                'color': winner_color if random.random() < 0.7 else random.choice(list(self.colors.values())),  # Mostly winner's color
-                'size': random.randint(3, 8),
-                'alpha': 255,  # Start fully opaque
-                'life': random.randint(100, 200),  # Shorter life for burst effect
-                'type': random.choice(['circle', 'star'])  # Variety: circles or stars
-            })
+    # Updates player scores based on current board
+    def update_scores(self):
+        self.player_scores = {'X': 0, 'O': 0, '△': 0}
+        for row in self.board:
+            for cell in row:
+                if cell != ' ':
+                    self.player_scores[cell] += 1
 
-    # Updates the positions and properties of victory particles
-    def update_particles(self):
-        for particle in self.victory_particles[:]:
-            particle['x'] += particle['vx']
-            particle['y'] += particle['vy']
-            particle['vy'] += 0.2  # Gravity
-            particle['life'] -= 1
-            particle['size'] = max(1, particle['size'] - 0.1)
-            particle['alpha'] = max(0, particle['alpha'] - 2)  # Fade out
-            if particle['life'] <= 0 or particle['y'] > self.screen.get_height() or particle['alpha'] <= 0:
-                self.victory_particles.remove(particle)
+    # Draws the scores section in the sidebar
+    def draw_scores(self, x, y):
+        title = self.font.render("Scores", True, self.text_color)
+        self.screen.blit(title, (x, y))
+        y += 40
+        for symbol, score in sorted(self.player_scores.items(), key=lambda item: -item[1]):
+            if score > 0 or symbol in [p['symbol'] for p in self.connected_players]:
+                text = f"{symbol}: {score}"
+                label = self.small_font.render(text, True, self.colors.get(symbol, self.text_color))
+                self.screen.blit(label, (x, y))
+                y += 30
 
-# Entry point: Creates and runs the game client
 if __name__ == "__main__":
     GameClient()
